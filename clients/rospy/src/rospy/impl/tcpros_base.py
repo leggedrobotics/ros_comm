@@ -789,34 +789,28 @@ class TCPROSTransport(Transport):
                 
             time.sleep(interval)
 
+
     def callback_loop(self, msgs_callback):
         while not self.done and not is_shutdown():
             with self.msg_lock:
                 self.msg_is_available.wait()
-                msg = self.msg
-                self.msg_lock.release()
-                msgs_callback(msg, self)
-                self.msg_lock.acquire()
+                if self.msg:  # Make sure msg is not None before proceeding
+                    msgs_callback(self.msg, self)
 
     def receive_loop(self, msgs_callback):
         """
         Receive messages until shutdown
-        @param msgs_callback: callback to invoke for new messages received    
-        @type  msgs_callback: fn([msg])
         """
-        # - use assert here as this would be an internal error, aka bug
         logger.debug("receive_loop for [%s]", self.name)
-        print("receiving data")
+        
+        self.msg_lock = threading.Lock()
+        self.msg_is_available = threading.Condition(self.msg_lock)
+        self.msg = None
+
+        callback_thread = threading.Thread(target=self.callback_loop, args=(msgs_callback,))
+        callback_thread.start()
+
         try:
-            self.msg_lock = threading.Lock()
-            self.msg_is_available = threading.Condition(self.msg_lock)
-            self.msg = None
-
-            callback_thread = threading.Thread(
-                    target=self.callback_loop,
-                    args=(msgs_callback,))
-            callback_thread.start()
-
             while not self.done and not is_shutdown():
                 try:
                     if self.socket is not None:
@@ -862,11 +856,12 @@ class TCPROSTransport(Transport):
 
             with self.msg_lock:
                 self.msg_is_available.notify()
-            callback_thread.join()
             rospydebug("receive_loop[%s]: done condition met, exited loop"%self.name)                    
         finally:
+            callback_thread.join()
             if not self.done:
                 self.close()
+
 
     def close(self):
         """close i/o and release resources"""
